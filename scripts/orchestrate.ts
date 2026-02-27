@@ -125,6 +125,45 @@ Output ALL files using the ===FILE: path=== ... ===END FILE=== format as instruc
     }
 }
 
+// ─── Vercel Compatibility ──────────────────────────────────────────
+
+async function ensureVercelCompat(outputDir: string) {
+    console.log(`  Ensuring Vercel compatibility...`);
+
+    // Explicit PostCSS config to prevent Vercel from auto-detecting Tailwind
+    const postcssConfig = `module.exports = {
+  plugins: {},
+};
+`;
+    await fs.writeFile(path.join(outputDir, "postcss.config.js"), postcssConfig);
+    console.log(`  ✓ postcss.config.js (explicit, no Tailwind)`);
+
+    // Remove any next.config.ts if next.config.js exists (can't have both)
+    const hasJs = await fs.access(path.join(outputDir, "next.config.js")).then(() => true).catch(() => false);
+    const hasTs = await fs.access(path.join(outputDir, "next.config.ts")).then(() => true).catch(() => false);
+    const hasMjs = await fs.access(path.join(outputDir, "next.config.mjs")).then(() => true).catch(() => false);
+    if (hasJs && hasTs) {
+        await fs.unlink(path.join(outputDir, "next.config.ts"));
+        console.log(`  ✓ Removed conflicting next.config.ts`);
+    }
+    if (hasJs && hasMjs) {
+        await fs.unlink(path.join(outputDir, "next.config.mjs"));
+        console.log(`  ✓ Removed conflicting next.config.mjs`);
+    }
+
+    // If no next.config.js, create one
+    if (!hasJs) {
+        const nextConfig = `/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+};
+module.exports = nextConfig;
+`;
+        await fs.writeFile(path.join(outputDir, "next.config.js"), nextConfig);
+        console.log(`  ✓ Created next.config.js`);
+    }
+}
+
 // ─── Local Build Verification ──────────────────────────────────────
 
 async function localBuild(outputDir: string): Promise<{ success: boolean; errorOutput?: string }> {
@@ -453,6 +492,9 @@ async function main() {
         console.error("\n❌ Pipeline aborted: Generation failed.");
         return;
     }
+
+    // ── Step 1.5: Ensure Vercel compatibility ──
+    await ensureVercelCompat(outputDir);
 
     // ── Step 2: Local Build Verification (with fix retries) ──
     let buildPassed = false;
