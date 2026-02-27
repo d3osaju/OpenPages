@@ -99,8 +99,8 @@ CRITICAL RULES:
 - Use ONLY vanilla CSS in globals.css. Do NOT use @tailwind directives or any Tailwind CSS.
 - Do NOT include tailwindcss, @tailwindcss/postcss, postcss, or autoprefixer as dependencies.
 - Do NOT create postcss.config.js, postcss.config.mjs, or tailwind.config files.
-- Only create ONE next.config file (next.config.ts), never next.config.mjs or next.config.js.
-- Use Next.js 14.x (not 15.x) for maximum compatibility.
+- Use next.config.js (CommonJS with module.exports), NOT next.config.ts or next.config.mjs.
+- Use Next.js 14.x (e.g. "next": "^14.2.0") for maximum compatibility.
 
 Output ALL files using the ===FILE: path=== ... ===END FILE=== format as instructed in your identity.`;
 
@@ -123,6 +123,36 @@ Output ALL files using the ===FILE: path=== ... ===END FILE=== format as instruc
         console.error("  ✗ Generation failed:", error);
         return false;
     }
+}
+
+// ─── Local Build Verification ──────────────────────────────────────
+
+async function localBuild(outputDir: string): Promise<{ success: boolean; errorOutput?: string }> {
+    console.log(`\n🔨 [Build] Running local build verification...`);
+
+    try {
+        console.log(`  Installing dependencies...`);
+        await execAsync(`npm install`, { cwd: outputDir, timeout: 120000 });
+        console.log(`  ✓ Dependencies installed.`);
+
+        console.log(`  Running build...`);
+        await execAsync(`npm run build`, { cwd: outputDir, timeout: 120000 });
+        console.log(`  ✓ Build succeeded!`);
+        return { success: true };
+    } catch (error: any) {
+        const errorOutput = error.stderr || error.stdout || String(error);
+        console.error(`  ✗ Build failed.`);
+        return { success: false, errorOutput };
+    }
+}
+
+async function cleanBuildArtifacts(outputDir: string) {
+    console.log(`  Cleaning build artifacts...`);
+    const toRemove = ['node_modules', '.next', 'package-lock.json', 'next-env.d.ts'];
+    for (const item of toRemove) {
+        await fs.rm(path.join(outputDir, item), { recursive: true, force: true }).catch(() => { });
+    }
+    console.log(`  ✓ Build artifacts cleaned.`);
 }
 
 // ─── Git: Commit & Push (entire repo) ──────────────────────────────
@@ -424,57 +454,61 @@ async function main() {
         return;
     }
 
-    // ── Step 2: Commit & Push ──
+    // ── Step 2: Local Build Verification (with fix retries) ──
+    let buildPassed = false;
+    for (let attempt = 0; attempt <= MAX_FIX_RETRIES; attempt++) {
+        if (attempt > 0) {
+            console.log(`\n🔁 Local build fix attempt ${attempt}/${MAX_FIX_RETRIES}...`);
+        }
+
+        const buildResult = await localBuild(outputDir);
+        if (buildResult.success) {
+            buildPassed = true;
+            break;
+        }
+
+        // Build failed — try to fix
+        if (attempt < MAX_FIX_RETRIES && buildResult.errorOutput) {
+            const fixed = await fixBuildErrors(siteName, outputDir, buildResult.errorOutput);
+            if (!fixed) {
+                console.error("\n❌ Fix agent couldn't repair the code. Aborting.");
+                break;
+            }
+        }
+    }
+
+    if (!buildPassed) {
+        console.error(`\n❌ Pipeline aborted: Local build failed after ${MAX_FIX_RETRIES} fix attempts.`);
+        return;
+    }
+
+    // ── Step 3: Clean build artifacts before committing ──
+    await cleanBuildArtifacts(outputDir);
+
+    // ── Step 4: Commit & Push ──
     const pushed = await commitAndPush(siteName);
     if (!pushed) {
         console.error("\n❌ Pipeline aborted: Git push failed.");
         return;
     }
 
-    // ── Step 3: Deploy (with retry loop) ──
-    let projectId: string | undefined;
-    let deployResult: DeployResult;
+    // ── Step 5: Deploy to Vercel ──
+    const deployResult = await deployToVercel(siteName);
 
-    for (let attempt = 0; attempt <= MAX_FIX_RETRIES; attempt++) {
-        if (attempt > 0) {
-            console.log(`\n🔁 Retry attempt ${attempt}/${MAX_FIX_RETRIES}...`);
-        }
+    if (deployResult.success) {
+        // ── Step 6: Success! Notify Discord ──
+        await notifyDiscord(siteName, deployResult.vercelUrl!);
 
-        deployResult = await deployToVercel(siteName, projectId);
-        projectId = deployResult.projectId;
+        // ── Step 7: Update Database ──
+        await updateDatabase(siteName, deployResult.vercelUrl!);
 
-        if (deployResult.success) {
-            // ── Step 4: Success! Notify Discord ──
-            await notifyDiscord(siteName, deployResult.vercelUrl!);
-
-            // ── Step 5: Update Database ──
-            await updateDatabase(siteName, deployResult.vercelUrl!);
-
-            console.log(`\n${"═".repeat(60)}`);
-            console.log(`  ✅ Pipeline completed for ${siteName}`);
-            console.log(`  🌐 Live: https://${deployResult.vercelUrl}`);
-            console.log(`${"═".repeat(60)}\n`);
-            return;
-        }
-
-        // Deployment failed — try to fix
-        if (attempt < MAX_FIX_RETRIES && deployResult.errorLogs) {
-            const fixed = await fixBuildErrors(siteName, outputDir, deployResult.errorLogs);
-            if (!fixed) {
-                console.error("\n❌ Fix agent couldn't repair the code. Aborting.");
-                break;
-            }
-
-            // Re-commit and push the fixed code
-            const rePushed = await commitAndPush(siteName);
-            if (!rePushed) {
-                console.error("\n❌ Failed to push fixed code. Aborting.");
-                break;
-            }
-        }
+        console.log(`\n${"═".repeat(60)}`);
+        console.log(`  ✅ Pipeline completed for ${siteName}`);
+        console.log(`  🌐 Live: https://${deployResult.vercelUrl}`);
+        console.log(`${"═".repeat(60)}\n`);
+    } else {
+        console.error(`\n❌ Vercel deployment failed: ${deployResult.errorLogs}`);
     }
-
-    console.error(`\n❌ Pipeline failed after ${MAX_FIX_RETRIES} fix attempts for ${siteName}.`);
 }
 
 // ─── Discord & Database ────────────────────────────────────────────
