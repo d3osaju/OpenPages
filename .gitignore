@@ -41,3 +41,16 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# generated sites staging
+/.generated/
+
+# sqlite database
+dev.db
+
+# generated site build artifacts (inside sites/*/)
+sites/*/node_modules/
+sites/*/.next/
+sites/*/out/
+sites/*/package-lock.json
+sites/*/_raw_response.txt

@@ -2,235 +2,501 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
-import { Octokit } from "@octokit/rest";
 import fetch from "node-fetch";
 
 const execAsync = promisify(exec);
 
-// Generate a random name for the new landing page
+const MAX_FIX_RETRIES = 3;
+const DEPLOY_POLL_INTERVAL_MS = 15000; // 15 seconds
+const DEPLOY_POLL_TIMEOUT_MS = 300000; // 5 minutes
+
+// ─── Helpers ───────────────────────────────────────────────────────
+
 function generateSiteName() {
     const adjectives = ["rapid", "swift", "nova", "apex", "zenith", "hyper", "ultra", "lunar", "solar", "neon"];
     const nouns = ["launch", "forge", "wave", "spark", "pulse", "orbit", "flow", "nexus", "core", "grid"];
-    const randomAdjective = adjectives[Math.floor(Math.random() * adjectives.length)];
-    const randomNoun = nouns[Math.floor(Math.random() * nouns.length)];
-    const randomNumber = Math.floor(Math.random() * 1000);
-    return `${randomAdjective}-${randomNoun}-${randomNumber}`;
+    const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+    const noun = nouns[Math.floor(Math.random() * nouns.length)];
+    const num = Math.floor(Math.random() * 1000);
+    return `${adj}-${noun}-${num}`;
 }
 
-async function runOpenclaw(siteName: string, outputDir: string) {
-    console.log(`Starting Openclaw generation for ${siteName}...`);
-    // Define a basic prompt for Openclaw to generate a Next.js landing page
-    const prompt = `Create a beautiful, modern, high-converting React landing page for a SaaS product called ${siteName}. Use Tailwind CSS for styling. Make it look premium with dark mode, glowing gradients, and smooth animations. Ensure it's a complete, standalone project.`;
+function getEnvOrThrow(key: string): string {
+    const val = process.env[key];
+    if (!val) throw new Error(`Missing env var: ${key}`);
+    return val;
+}
 
-    // Note: Assuming Openclaw can be invoked via WSL and output to a specific directory
-    // Adjust the exact CLI arguments based on Openclaw's actual usage
-    // For testing purposes, we use a mock script since Openclaw is hanging
-    const command = `node ./src/lib/orchestrator/mock-openclaw.js generate --prompt "${prompt}" --output "${outputDir}"`;
+// Parse ===FILE: path=== ... ===END FILE=== blocks
+function parseFileBlocks(text: string): Map<string, string> {
+    const files = new Map<string, string>();
+    const re = /===FILE:\s*(.+?)===\n([\s\S]*?)===END FILE===/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        files.set(m[1].trim(), m[2]);
+    }
+    return files;
+}
+
+async function writeFiles(outputDir: string, files: Map<string, string>) {
+    for (const [filePath, content] of files) {
+        const full = path.join(outputDir, filePath);
+        await fs.mkdir(path.dirname(full), { recursive: true });
+        await fs.writeFile(full, content);
+        console.log(`  ✓ ${filePath}`);
+    }
+}
+
+async function callOpenClaw(agentId: string, prompt: string): Promise<string> {
+    const url = getEnvOrThrow("OPENCLAW_GATEWAY_URL");
+    const token = getEnvOrThrow("OPENCLAW_GATEWAY_TOKEN");
+
+    const res = await fetch(`${url}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "x-openclaw-agent-id": agentId
+        },
+        body: JSON.stringify({
+            model: `openclaw:${agentId}`,
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: 16000,
+            temperature: 0.7
+        })
+    });
+
+    if (!res.ok) {
+        throw new Error(`OpenClaw API error (${res.status}): ${await res.text()}`);
+    }
+
+    const data = await res.json() as any;
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error("OpenClaw returned empty content");
+    return content;
+}
+
+function sleep(ms: number) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ─── Agent 1: Site Generator ───────────────────────────────────────
+
+async function generateSite(siteName: string, outputDir: string): Promise<boolean> {
+    console.log(`\n🎨 [Generator] Creating landing page for "${siteName}"...`);
+
+    const prompt = `Generate a complete Next.js landing page for a SaaS product called "${siteName}". 
+The site should be a premium, dark-mode landing page with:
+- A stunning hero section with gradient text and a call-to-action
+- A features section with at least 6 feature cards
+- A pricing section with 3 tiers
+- A testimonials section
+- A footer
+- Smooth CSS animations and hover effects
+- Fully responsive design
+- Use inline styles or a globals.css file for styling (no external CSS dependencies needed)
+
+Output ALL files using the ===FILE: path=== ... ===END FILE=== format as instructed in your identity.`;
 
     try {
-        const { stdout, stderr } = await execAsync(command);
-        console.log("Openclaw generation stdout:", stdout);
-        if (stderr) console.error("Openclaw generation stderr:", stderr);
+        const content = await callOpenClaw("openpages", prompt);
+        console.log(`  Received ${content.length} characters from OpenClaw.`);
+
+        const files = parseFileBlocks(content);
+        if (files.size === 0) {
+            console.error("  ✗ Failed to parse files from response.");
+            await fs.mkdir(outputDir, { recursive: true });
+            await fs.writeFile(path.join(outputDir, "_raw_response.txt"), content);
+            return false;
+        }
+
+        console.log(`  Parsed ${files.size} files:`);
+        await writeFiles(outputDir, files);
         return true;
     } catch (error) {
-        console.error("Failed to run Openclaw:", error);
+        console.error("  ✗ Generation failed:", error);
         return false;
     }
 }
 
+// ─── Git: Commit & Push (entire repo) ──────────────────────────────
+
+async function commitAndPush(siteName: string): Promise<boolean> {
+    console.log(`\n📤 [Git] Committing and pushing entire repo...`);
+
+    const githubToken = getEnvOrThrow("GITHUB_TOKEN");
+    const repoFullName = getEnvOrThrow("GITHUB_REPO_FULL_NAME");
+
+    const cmds = [
+        `git add .`,
+        `git commit -m "Auto-generated site: ${siteName}"`,
+        `git push https://x-access-token:${githubToken}@github.com/${repoFullName}.git main`
+    ].join(" && ");
+
+    try {
+        await execAsync(cmds);
+        console.log("  ✓ Code pushed successfully.");
+        return true;
+    } catch (error) {
+        console.error("  ✗ Git push failed:", error);
+        return false;
+    }
+}
+
+// ─── Agent 2: Deployment ───────────────────────────────────────────
+
+interface DeployResult {
+    success: boolean;
+    projectId?: string;
+    deploymentId?: string;
+    deploymentUrl?: string;
+    vercelUrl?: string;
+    errorLogs?: string;
+}
+
+async function createVercelProject(siteName: string): Promise<{ projectId: string }> {
+    const vercelToken = getEnvOrThrow("VERCEL_TOKEN");
+    const repoFullName = getEnvOrThrow("GITHUB_REPO_FULL_NAME");
+    const [org, repo] = repoFullName.split("/");
+
+    console.log(`  Creating Vercel project "${siteName}"...`);
+    const res = await fetch("https://api.vercel.com/v9/projects", {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${vercelToken}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            name: siteName,
+            framework: "nextjs",
+            rootDirectory: `sites/${siteName}`,
+            gitRepository: { repo: repoFullName, type: "github" }
+        })
+    });
+
+    if (!res.ok) {
+        throw new Error(`Failed to create Vercel project: ${await res.text()}`);
+    }
+
+    const data = await res.json() as any;
+    console.log(`  ✓ Project created: ${data.id}`);
+    return { projectId: data.id };
+}
+
+async function triggerDeployment(siteName: string, projectId: string): Promise<{ deploymentId: string; url: string }> {
+    const vercelToken = getEnvOrThrow("VERCEL_TOKEN");
+    const repoFullName = getEnvOrThrow("GITHUB_REPO_FULL_NAME");
+    const [org, repo] = repoFullName.split("/");
+
+    console.log(`  Triggering deployment...`);
+    const res = await fetch("https://api.vercel.com/v13/deployments", {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${vercelToken}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            name: siteName,
+            project: projectId,
+            gitSource: { type: "github", org, repo, ref: "main" }
+        })
+    });
+
+    if (!res.ok) {
+        throw new Error(`Failed to trigger deployment: ${await res.text()}`);
+    }
+
+    const data = await res.json() as any;
+    console.log(`  ✓ Deployment triggered: ${data.url} (${data.readyState})`);
+    return { deploymentId: data.id, url: data.url };
+}
+
+async function pollDeployment(deploymentId: string): Promise<{ state: string; errorMessage?: string }> {
+    const vercelToken = getEnvOrThrow("VERCEL_TOKEN");
+    const start = Date.now();
+
+    console.log(`  Polling deployment status...`);
+    while (Date.now() - start < DEPLOY_POLL_TIMEOUT_MS) {
+        const res = await fetch(`https://api.vercel.com/v13/deployments/${deploymentId}`, {
+            headers: { "Authorization": `Bearer ${vercelToken}` }
+        });
+        const data = await res.json() as any;
+        const state = data.readyState || data.state;
+
+        if (state === "READY") {
+            console.log(`  ✓ Deployment is READY!`);
+            return { state: "READY" };
+        }
+        if (state === "ERROR" || state === "CANCELED") {
+            console.log(`  ✗ Deployment failed: ${data.errorMessage || "unknown error"}`);
+            return { state, errorMessage: data.errorMessage || "Build failed" };
+        }
+
+        process.stdout.write(`  ⏳ ${state}...`);
+        await sleep(DEPLOY_POLL_INTERVAL_MS);
+        process.stdout.write("\r");
+    }
+
+    return { state: "TIMEOUT", errorMessage: "Deployment polling timed out" };
+}
+
+async function fetchBuildLogs(deploymentId: string): Promise<string> {
+    const vercelToken = getEnvOrThrow("VERCEL_TOKEN");
+
+    try {
+        const res = await fetch(`https://api.vercel.com/v2/deployments/${deploymentId}/events`, {
+            headers: { "Authorization": `Bearer ${vercelToken}` }
+        });
+        const events = await res.json() as any[];
+        const logs = events
+            .filter((e: any) => e.text)
+            .map((e: any) => e.text)
+            .join("\n");
+        return logs || "No build logs available";
+    } catch {
+        return "Failed to fetch build logs";
+    }
+}
+
+async function assignDomain(projectId: string, siteName: string): Promise<string> {
+    const vercelToken = getEnvOrThrow("VERCEL_TOKEN");
+    const customDomain = `${siteName}.openpages.zetalabs.in`;
+
+    console.log(`  Assigning domain ${customDomain}...`);
+    const res = await fetch(`https://api.vercel.com/v9/projects/${projectId}/domains`, {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${vercelToken}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ name: customDomain })
+    });
+
+    if (!res.ok) {
+        console.warn(`  ⚠ Failed to assign custom domain, using default.`);
+        return `${siteName}.vercel.app`;
+    }
+
+    console.log(`  ✓ Domain assigned: ${customDomain}`);
+    return customDomain;
+}
+
+async function deployToVercel(siteName: string, existingProjectId?: string): Promise<DeployResult> {
+    console.log(`\n🚀 [Deployer] Deploying "${siteName}" to Vercel...`);
+
+    try {
+        // Create project (only on first deploy)
+        const projectId = existingProjectId || (await createVercelProject(siteName)).projectId;
+
+        // Trigger deployment
+        const { deploymentId, url } = await triggerDeployment(siteName, projectId);
+
+        // Poll until READY or ERROR
+        const result = await pollDeployment(deploymentId);
+
+        if (result.state === "READY") {
+            const vercelUrl = await assignDomain(projectId, siteName);
+            return {
+                success: true,
+                projectId,
+                deploymentId,
+                deploymentUrl: url,
+                vercelUrl
+            };
+        }
+
+        // Deployment failed — fetch build logs
+        console.log(`  Fetching build logs for analysis...`);
+        const buildLogs = await fetchBuildLogs(deploymentId);
+
+        return {
+            success: false,
+            projectId,
+            deploymentId,
+            errorLogs: `${result.errorMessage}\n\nBuild logs:\n${buildLogs}`
+        };
+    } catch (error) {
+        console.error("  ✗ Deployment error:", error);
+        return { success: false, errorLogs: String(error) };
+    }
+}
+
+// ─── Agent 3: Fix Agent ────────────────────────────────────────────
+
+async function fixBuildErrors(siteName: string, outputDir: string, errorLogs: string): Promise<boolean> {
+    console.log(`\n🔧 [Fixer] Analyzing and fixing build errors...`);
+
+    // Step 1: Ask the deployer agent to analyze the error
+    console.log(`  Asking deployer agent to analyze error...`);
+    const analysis = await callOpenClaw("openpages-deployer",
+        `Analyze this Vercel build error for a Next.js site called "${siteName}":\n\n${errorLogs}`
+    );
+    console.log(`  Analysis:\n${analysis}`);
+
+    // Step 2: Read the current files that might need fixing
+    const currentFiles: Record<string, string> = {};
+    async function readDir(dir: string, prefix = "") {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+            if (entry.name === "node_modules" || entry.name === ".next") continue;
+            const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) {
+                await readDir(path.join(dir, entry.name), rel);
+            } else {
+                currentFiles[rel] = await fs.readFile(path.join(dir, entry.name), "utf-8");
+            }
+        }
+    }
+    await readDir(outputDir);
+
+    const fileList = Object.entries(currentFiles)
+        .map(([name, content]) => `===FILE: ${name}===\n${content}\n===END FILE===`)
+        .join("\n\n");
+
+    // Step 3: Ask the fixer agent to produce corrected files
+    console.log(`  Asking fixer agent to repair code...`);
+    const fixResponse = await callOpenClaw("openpages-fixer",
+        `Fix the following build errors in a Next.js site called "${siteName}".
+
+Error analysis:
+${analysis}
+
+Current files:
+${fileList}
+
+Output ONLY the corrected files using ===FILE: path=== ... ===END FILE=== format.`
+    );
+
+    const fixedFiles = parseFileBlocks(fixResponse);
+    if (fixedFiles.size === 0) {
+        console.error("  ✗ Fixer agent returned no files.");
+        return false;
+    }
+
+    console.log(`  Writing ${fixedFiles.size} fixed files:`);
+    await writeFiles(outputDir, fixedFiles);
+    return true;
+}
+
+// ─── Orchestrator ──────────────────────────────────────────────────
+
 async function main() {
     const siteName = generateSiteName();
-    const outputDir = path.join(process.cwd(), ".generated", siteName);
+    const outputDir = path.join(process.cwd(), "sites", siteName);
 
-    console.log(`Pipeline started for: ${siteName}`);
+    console.log(`\n${"═".repeat(60)}`);
+    console.log(`  OpenPages Pipeline — ${siteName}`);
+    console.log(`${"═".repeat(60)}`);
 
-    // 1. Generate the site using Openclaw via WSL
-    const generationSuccess = await runOpenclaw(siteName, outputDir);
-    if (!generationSuccess) {
-        console.error("Pipeline aborted: Generation failed.");
+    // ── Step 1: Generate ──
+    const generated = await generateSite(siteName, outputDir);
+    if (!generated) {
+        console.error("\n❌ Pipeline aborted: Generation failed.");
         return;
     }
 
-    console.log("Generation successful!");
-
-    // 2. Create GitHub repository and push code
-    const githubToken = process.env.GITHUB_TOKEN;
-    if (!githubToken) {
-        console.error("Pipeline aborted: GITHUB_TOKEN not found.");
+    // ── Step 2: Commit & Push ──
+    const pushed = await commitAndPush(siteName);
+    if (!pushed) {
+        console.error("\n❌ Pipeline aborted: Git push failed.");
         return;
     }
 
-    const octokit = new Octokit({ auth: githubToken });
-    let repoUrl = "";
-    let repoFullName = "";
+    // ── Step 3: Deploy (with retry loop) ──
+    let projectId: string | undefined;
+    let deployResult: DeployResult;
 
-    try {
-        const githubOrg = process.env.GITHUB_ORG;
-
-        console.log(`Creating GitHub repository: ${siteName}`);
-        // Create the repository
-        let response;
-        if (githubOrg) {
-            response = await octokit.rest.repos.createInOrg({
-                org: githubOrg,
-                name: siteName,
-                description: `Landing page generated by Openclaw for Openpages`,
-                private: false,
-            });
-        } else {
-            response = await octokit.rest.repos.createForAuthenticatedUser({
-                name: siteName,
-                description: `Landing page generated by Openclaw for Openpages`,
-                private: false,
-            });
+    for (let attempt = 0; attempt <= MAX_FIX_RETRIES; attempt++) {
+        if (attempt > 0) {
+            console.log(`\n🔁 Retry attempt ${attempt}/${MAX_FIX_RETRIES}...`);
         }
 
-        repoUrl = response.data.html_url;
-        repoFullName = response.data.full_name;
-        const gitUrl = response.data.clone_url;
-        console.log(`Repository created at: ${repoUrl}`);
+        deployResult = await deployToVercel(siteName, projectId);
+        projectId = deployResult.projectId;
 
-        // Assuming the generated code is a complete git repository or we need to init one
-        // We'll init, add, commit, and push
-        console.log("Pushing code to GitHub...");
-        const gitCommands = [
-            `cd "${outputDir}"`,
-            `git init`,
-            `git add .`,
-            `git commit -m "Initial commit from Openclaw"`,
-            `git branch -M main`,
-            `git remote add origin https://${githubToken}@github.com/${repoFullName}.git`,
-            `git push -u origin main`
-        ].join(" && ");
+        if (deployResult.success) {
+            // ── Step 4: Success! Notify Discord ──
+            await notifyDiscord(siteName, deployResult.vercelUrl!);
 
-        await execAsync(gitCommands);
-        console.log("Code pushed successfully.");
+            // ── Step 5: Update Database ──
+            await updateDatabase(siteName, deployResult.vercelUrl!);
 
-    } catch (error) {
-        console.error("Failed to create or push to GitHub repository:", error);
+            console.log(`\n${"═".repeat(60)}`);
+            console.log(`  ✅ Pipeline completed for ${siteName}`);
+            console.log(`  🌐 Live: https://${deployResult.vercelUrl}`);
+            console.log(`${"═".repeat(60)}\n`);
+            return;
+        }
+
+        // Deployment failed — try to fix
+        if (attempt < MAX_FIX_RETRIES && deployResult.errorLogs) {
+            const fixed = await fixBuildErrors(siteName, outputDir, deployResult.errorLogs);
+            if (!fixed) {
+                console.error("\n❌ Fix agent couldn't repair the code. Aborting.");
+                break;
+            }
+
+            // Re-commit and push the fixed code
+            const rePushed = await commitAndPush(siteName);
+            if (!rePushed) {
+                console.error("\n❌ Failed to push fixed code. Aborting.");
+                break;
+            }
+        }
+    }
+
+    console.error(`\n❌ Pipeline failed after ${MAX_FIX_RETRIES} fix attempts for ${siteName}.`);
+}
+
+// ─── Discord & Database ────────────────────────────────────────────
+
+async function notifyDiscord(siteName: string, vercelUrl: string) {
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+    if (!webhookUrl) {
+        console.log("\n⏭ Skipping Discord notification (no webhook URL).");
         return;
     }
 
-    // 3. Vercel deployment and domain mapping
-    const vercelToken = process.env.VERCEL_TOKEN;
-    if (!vercelToken) {
-        console.error("Pipeline aborted: VERCEL_TOKEN not found.");
-        return;
-    }
-
-    let vercelUrl = "";
+    const repoFullName = getEnvOrThrow("GITHUB_REPO_FULL_NAME");
+    console.log("\n💬 Sending Discord notification...");
     try {
-        console.log("Creating Vercel project and linking GitHub repo...");
-        // Create Vercel project linked to the GitHub repo
-        const createProjectRes = await fetch("https://api.vercel.com/v9/projects", {
+        await fetch(webhookUrl, {
             method: "POST",
-            headers: {
-                "Authorization": `Bearer ${vercelToken}`,
-                "Content-Type": "application/json"
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                name: siteName,
-                framework: "nextjs",
-                gitRepository: {
-                    repo: repoFullName,
-                    type: "github"
-                }
+                content: `🚀 **New Openpages Site Deployed!**\n\n**Name:** ${siteName}\n**Live URL:** https://${vercelUrl}\n**GitHub:** https://github.com/${repoFullName}/tree/main/sites/${siteName}\n\nGenerated autonomously by OpenClaw.`
             })
         });
-
-        if (!createProjectRes.ok) {
-            throw new Error(`Failed to create Vercel project: ${await createProjectRes.text()}`);
-        }
-
-        const projectData = await createProjectRes.json();
-        const projectId = (projectData as any).id;
-        console.log(`Vercel project created: ${projectId}`);
-
-        // Check if domain assignment is needed
-        // Note: Vercel automatically creates a `<project-name>.vercel.app` domain. 
-        // To add `[siteName].Openpages.Zetalabs.in`, we use the domains endpoint.
-        const customDomain = `${siteName}.Openpages.Zetalabs.in`.toLowerCase();
-
-        console.log(`Assigning domain ${customDomain} to Vercel project...`);
-        const addDomainRes = await fetch(`https://api.vercel.com/v9/projects/${projectId}/domains`, {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${vercelToken}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                name: customDomain
-            })
-        });
-
-        if (!addDomainRes.ok) {
-            console.warn(`Warning: Failed to add custom domain. Falling back to default Vercel URL. ${await addDomainRes.text()}`);
-            vercelUrl = `${siteName}.vercel.app`; // Fallback optimistic URL
-        } else {
-            vercelUrl = customDomain;
-            console.log(`Domain assigned: ${customDomain}`);
-        }
-
-        // Since linking a repo triggers an initial silent deployment sometimes, or we can trigger it explicitly
-        // For now we'll rely on Vercel's automatic deployment on repo creation/link
-        // If explicit deployment is needed:
-        /*
-        const deployRes = await fetch("https://api.vercel.com/v13/deployments", {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${vercelToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ name: siteName, gitSource: { repoId: ..., ref: "main", type: "github" } })
-        });
-        */
-
+        console.log("  ✓ Discord notification sent.");
     } catch (error) {
-        console.error("Vercel deployment failed:", error);
-        return;
+        console.error("  ✗ Discord notification failed:", error);
     }
+}
 
-    // 4. Update Database
+async function updateDatabase(siteName: string, vercelUrl: string) {
+    const repoFullName = getEnvOrThrow("GITHUB_REPO_FULL_NAME");
+    console.log("\n💾 Updating database...");
     try {
-        console.log("Updating local database...");
-        const dbUpdateRes = await fetch("http://localhost:3000/api/websites", {
+        const res = await fetch("http://localhost:3000/api/websites", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 name: siteName,
-                githubUrl: repoUrl,
-                vercelUrl: vercelUrl,
+                githubUrl: `https://github.com/${repoFullName}/tree/main/sites/${siteName}`,
+                vercelUrl,
                 status: "DEPLOYED",
-                screenshot: "" // Can be populated later by a screenshot service
+                screenshot: ""
             })
         });
-        if (!dbUpdateRes.ok) throw new Error("Database API error");
-        console.log("Database updated successfully.");
+        if (!res.ok) throw new Error("API error");
+        console.log("  ✓ Database updated.");
     } catch (error) {
-        console.error("Failed to update database:", error);
+        console.error("  ⚠ Database update failed (non-fatal):", error);
     }
-
-    // 5. Discord webhook notification logic
-    const discordWebhookUrls = process.env.DISCORD_WEBHOOK_URL;
-    if (discordWebhookUrls) {
-        console.log("Sending Discord notification...");
-        try {
-            await fetch(discordWebhookUrls, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    content: `🚀 **New Openpages Site Deployed!**\n\n**Name:** ${siteName}\n**Live URL:** https://${vercelUrl}\n**GitHub:** ${repoUrl}\n\nGenerated autonomously by Openclaw.`
-                })
-            });
-            console.log("Discord notification sent.");
-        } catch (error) {
-            console.error("Failed to send Discord notification:", error);
-        }
-    } else {
-        console.log("Skipping Discord notification (DISCORD_WEBHOOK_URL not set).");
-    }
-
-    console.log(`Pipeline completed successfully for ${siteName}.`);
 }
 
-// Allow running directly
+// ─── Entry Point ───────────────────────────────────────────────────
+
 if (require.main === module) {
     main().catch(console.error);
 }
