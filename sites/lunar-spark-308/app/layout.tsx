@@ -2,9 +2,10 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ultra-pulse-847 | AI-Powered Growth Infrastructure",
+  title: "lunar-spark-308 | Ignite Growth at Lunar Speed",
   description:
-    "ultra-pulse-847 helps teams orchestrate growth, automate insights, and scale faster with real-time intelligence."
+    "lunar-spark-308 is a premium SaaS platform for teams who want automation, insights, and growth in one lightning-fast workflow.",
+  keywords: ["SaaS", "automation", "analytics", "productivity", "lunar-spark-308"]
 };
 
 export default function RootLayout({

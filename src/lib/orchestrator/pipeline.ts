@@ -94,7 +94,13 @@ The site should be a premium, dark-mode landing page with:
 - A footer
 - Smooth CSS animations and hover effects
 - Fully responsive design
-- Use inline styles or a globals.css file for styling (no external CSS dependencies needed)
+
+CRITICAL RULES:
+- Use ONLY vanilla CSS in globals.css. Do NOT use @tailwind directives or any Tailwind CSS.
+- Do NOT include tailwindcss, @tailwindcss/postcss, postcss, or autoprefixer as dependencies.
+- Do NOT create postcss.config.js, postcss.config.mjs, or tailwind.config files.
+- Only create ONE next.config file (next.config.ts), never next.config.mjs or next.config.js.
+- Use Next.js 14.x (not 15.x) for maximum compatibility.
 
 Output ALL files using the ===FILE: path=== ... ===END FILE=== format as instructed in your identity.`;
 
@@ -244,17 +250,40 @@ async function fetchBuildLogs(deploymentId: string): Promise<string> {
     const vercelToken = getEnvOrThrow("VERCEL_TOKEN");
 
     try {
-        const res = await fetch(`https://api.vercel.com/v2/deployments/${deploymentId}/events`, {
-            headers: { "Authorization": `Bearer ${vercelToken}` }
-        });
-        const events = await res.json() as any[];
-        const logs = events
-            .filter((e: any) => e.text)
-            .map((e: any) => e.text)
-            .join("\n");
+        // Use v3 API with builds=1 to get actual build output
+        const res = await fetch(
+            `https://api.vercel.com/v3/deployments/${deploymentId}/events?builds=1&limit=200`,
+            { headers: { "Authorization": `Bearer ${vercelToken}` } }
+        );
+
+        const raw = await res.text();
+
+        // Response may be JSON array or newline-delimited JSON
+        let logs = "";
+        try {
+            const events = JSON.parse(raw);
+            if (Array.isArray(events)) {
+                logs = events
+                    .filter((e: any) => e.text)
+                    .map((e: any) => e.text)
+                    .join("\n");
+            } else if (events.error) {
+                return `API error: ${events.error.message}`;
+            }
+        } catch {
+            // Try newline-delimited JSON
+            logs = raw.split("\n")
+                .filter(line => line.trim())
+                .map(line => {
+                    try { return JSON.parse(line).text || ""; } catch { return ""; }
+                })
+                .filter(Boolean)
+                .join("\n");
+        }
+
         return logs || "No build logs available";
-    } catch {
-        return "Failed to fetch build logs";
+    } catch (err) {
+        return `Failed to fetch build logs: ${err}`;
     }
 }
 
