@@ -21,7 +21,18 @@ Run this exact Python script to parse the Vercel response, filter out any delete
 python3 -c "
 import json, os
 data = json.load(open('/tmp/vercel-projects.json'))
-projects = [p['name'] for p in data.get('projects', []) if p['name'].count('-') >= 2 and p['name'][0].isalpha()]
+projects = []
+for p in data.get('projects', []):
+    name = p.get('name', '')
+    if name == 'openpages-storefront': continue
+    
+    link = p.get('link', {})
+    meta = p.get('targets', {}).get('production', {}).get('meta', {})
+    
+    repo_name = str(link.get('repo') or meta.get('githubRepo') or '').lower()
+    
+    if repo_name == 'openpages' or repo_name == 'd3osaju/openpages':
+        projects.append(name)
 
 STYLES = ['Neobrutalist', 'Swiss', 'Editorial', 'Glassmorphism', 'Retro-futuristic', 'Bauhaus', 'Minimal', 'Tech Forward', 'Kinetic', 'Japandi']
 COLORS = ['#6366f1', '#ec4899', '#f59e0b', '#06b6d4', '#10b981', '#8b5cf6', '#e11d48', '#4f46e5', '#0ea5e9']
