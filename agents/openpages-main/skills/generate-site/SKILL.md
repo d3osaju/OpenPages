@@ -209,6 +209,16 @@ sessions_spawn(agentId="openpages-storefront-updater", task="Add site $SITE_NAME
 
 ---
 
+## Phase 8 — Bundle the Sites
+
+Call the zipper sub-agent to package all generated landing pages into a single ZIP file for the digital product offering.
+
+```bash
+sessions_spawn(agentId="openpages-zipper", task="Zip the sites directory into OpenpagesZip/sites-bundle.zip and commit the file", runTimeoutSeconds=60)
+```
+
+---
+
 ## Final Report
 
 After completing, report:
