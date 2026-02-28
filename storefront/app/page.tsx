@@ -1,4 +1,5 @@
 import ShowcaseGrid from "./components/ShowcaseGrid";
+import CheckoutButton from "./components/CheckoutButton";
 
 export default function Home() {
     const styles = [
@@ -212,7 +213,7 @@ export default function Home() {
                                 <li>Unlimited personal & commercial projects</li>
                                 <li>One-time payment, yours forever</li>
                             </ul>
-                            <a href="#" className="btn btn-primary" style={{ width: '100%' }}>Buy Now - $29</a>
+                            <CheckoutButton />
                         </div>
                     </div>
                 </div>
