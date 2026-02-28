@@ -199,6 +199,16 @@ curl -s -X POST "$DISCORD_WEBHOOK_URL" \
 
 ---
 
+## Phase 7 — Update Storefront
+
+Call the storefront updater sub-agent to add the new site to the showcase grid.
+
+```bash
+sessions_spawn(agentId="openpages-storefront-updater", task="Add site $SITE_NAME with style $STYLE to the storefront JSON", runTimeoutSeconds=60)
+```
+
+---
+
 ## Final Report
 
 After completing, report:
