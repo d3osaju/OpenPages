@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { DodoPayments } from "dodopayments";
 
 const dodo = new DodoPayments({
-    bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+    bearerToken: process.env.DODO_PAYMENTS_API_KEY || "fallback_for_build",
     environment: process.env.NODE_ENV === "production" ? "live_mode" : "test_mode"
 });
 
@@ -13,38 +13,59 @@ export async function POST(req: Request) {
         }
 
         const baseUrl = process.env.NODE_ENV === "production"
-            ? "https://openpages.zetalabs.in" // User's prod domain
+            ? "https://openpages.zetalabs.in"
             : "http://localhost:3001";
 
-        /*
-         * 1. Ensure the product exists in Dodo Payments
-         */
-        // Let's manually retrieve or create the product if it doesn't exist.
-        // Dodo currently doesn't allow random throwaway products in checkout.
+        let productId = "";
 
-        let targetProductId = "";
+        // Attempt to find or create the product because product_cart requires a valid product_id
+        try {
+            const products = await dodo.products.list();
+            const pack = products.items.find((p: any) => p.name === "OpenPages - The Complete Pack");
+            if (pack) {
+                productId = pack.product_id;
+            } else {
+                const newProduct = await dodo.products.create({
+                    name: "OpenPages - The Complete Pack",
+                    description: "Lifetime access to all 25+ premium Next.js landing page templates",
+                    price: {
+                        currency: "USD",
+                        discount: 0,
+                        price: 2900,
+                        purchasing_power_parity: false,
+                        type: "one_time_price"
+                    },
+                    tax_category: "digital_products"
+                });
+                productId = newProduct.product_id;
+            }
+        } catch (e: any) {
+            console.error("Failed to initialize product catalog", e);
+            return NextResponse.json({ error: "Failed to initialize product catalog" }, { status: 500 });
+        }
 
-        // Use a generic placeholder email since Dodo requires it upfront if bypassing their own collector
-        const tempEmail = "buyer@openpages.zetalabs.in";
+        const tempEmail = "Openpages@proton.me";
 
         const payment = await dodo.payments.create({
             billing: {
                 city: "",
-                country: "US", // Billing country required by API interface
+                country: "IN",
                 state: "",
                 street: "",
                 zipcode: ""
             },
             customer: {
                 email: tempEmail,
-                name: "OpenPages Buyer",
-                create_new_customer: false
+                name: "OpenPages Buyer"
             },
             payment_link: true,
-            // Since we don't have a product ID created by the user yet, let's use the alternative schema if it exists or hardcode a placeholder for now. 
-            // Better yet, we will just pass empty for product cart and see if the API allows dynamic pricing via total_amount or another field, 
-            // but the typescript error says product_cart is required.
-            // Let's create the product inline.
+            product_cart: [
+                {
+                    product_id: productId,
+                    quantity: 1
+                }
+            ],
+            return_url: `${baseUrl}/download?session_id={CHECKOUT_SESSION_ID}`,
         });
 
         if (!payment || !payment.payment_link) {
