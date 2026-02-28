@@ -1,0 +1,40 @@
+:root {
+  --bg: #0b0f1a;
+  --panel: #121a2b;
+  --line: #2e3a58;
+  --text: #eff4ff;
+  --muted: #9aadd0;
+  --a: #5ef2ff;
+  --b: #ff4fd8;
+  --c: #ffe45e;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: Inter, system-ui, sans-serif;
+  background: linear-gradient(135deg, #090d18, #111a2c 55%, #0b1221);
+  color: var(--text);
+}
+.container { width: min(1100px, 92%); margin: 0 auto; }
+.topbar { border-bottom: 2px solid var(--line); background: rgba(9,13,24,.8); backdrop-filter: blur(8px); }
+.row { display: flex; justify-content: space-between; align-items: center; min-height: 72px; }
+.logo { font-weight: 800; letter-spacing: .4px; display: flex; align-items: center; gap: .6rem; }
+.logo span { display: grid; place-items: center; width: 34px; height: 34px; border: 2px solid var(--a); color: var(--a); }
+.hero { padding: 5rem 0 3rem; }
+.kicker { color: var(--c); letter-spacing: 2px; font-weight: 700; font-size: .8rem; }
+h1 { font-size: clamp(2rem, 5vw, 4rem); line-height: 1.05; margin: .5rem 0 1rem; max-width: 16ch; }
+.lead { color: var(--muted); max-width: 60ch; }
+.actions { display: flex; gap: .8rem; margin-top: 1.4rem; flex-wrap: wrap; }
+.btn { text-decoration: none; padding: .75rem 1rem; border: 2px solid var(--line); color: var(--text); font-weight: 700; }
+.btn.primary { background: linear-gradient(90deg, var(--a), var(--b)); color: #07111d; border-color: transparent; }
+.btn.ghost { background: transparent; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 1rem; padding: 2rem 0; }
+.card { background: linear-gradient(180deg, rgba(18,26,43,.95), rgba(16,23,37,.95)); border: 2px solid var(--line); padding: 1rem; }
+.card h3 { margin-top: 0; }
+.card p { color: var(--muted); }
+.statband { margin: 1rem auto 3rem; display: grid; grid-template-columns: repeat(3,1fr); gap: 1rem; }
+.statband > div { border: 2px solid var(--line); padding: 1rem; background: #0f1728; }
+.statband strong { display: block; font-size: 1.8rem; color: var(--a); }
+.statband span { color: var(--muted); }
+.cta { border: 2px solid var(--b); padding: 2rem; margin-bottom: 4rem; background: rgba(255,79,216,.08); }
+@media (max-width: 700px){ .statband{grid-template-columns:1fr;} }
