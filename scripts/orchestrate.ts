@@ -116,31 +116,104 @@ async function callOpenClaw(agentId: string, prompt: string): Promise<string> {
     return content;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// AGENT 1 — GENERATOR: Create + Lint + Build locally
-// ═══════════════════════════════════════════════════════════════════
+// ─── Design Style Randomizer ────────────────────────────────────────
 
-async function generateSite(siteName: string, outputDir: string): Promise<boolean> {
-    console.log(`\n🎨 [Agent 1 · Generator] Creating landing page for "${siteName}"...`);
+const DESIGN_STYLES = [
+    "Neobrutalist (raw, bold, confrontational with structured impact)",
+    "Swiss/International (grid-based, systematic, ultra-clean typography)",
+    "Editorial (magazine-inspired, sophisticated typography, article-focused)",
+    "Glassmorphism (translucent layers, blurred backgrounds, depth)",
+    "Retro-futuristic (80s vision of the future, refined nostalgia)",
+    "Bauhaus (geometric simplicity, primary shapes, form follows function)",
+    "Art Deco (elegant patterns, luxury, vintage sophistication)",
+    "Minimal (extreme reduction, maximum whitespace, essential only)",
+    "Flat (no depth, solid colors, simple icons, clean)",
+    "Material (Google-inspired, cards, subtle shadows, motion)",
+    "Neumorphic (soft shadows, extruded elements, tactile)",
+    "Monochromatic (single color variations, tonal depth)",
+    "Scandinavian (hygge, natural materials, warm minimalism)",
+    "Japandi (Japanese-Scandinavian fusion, zen meets hygge)",
+    "Dark Mode First (designed for dark interfaces, high contrast elegance)",
+    "Modernist (clean lines, functional beauty, timeless)",
+    "Organic/Fluid (flowing shapes, natural curves, sophisticated blob forms)",
+    "Corporate Professional (trust-building, established, refined)",
+    "Tech Forward (innovative, clean, future-focused)",
+    "Luxury Minimal (premium restraint, high-end simplicity)",
+    "Neo-Geo (refined geometric patterns, mathematical beauty)",
+    "Kinetic (motion-driven, dynamic but controlled)",
+    "Gradient Modern (sophisticated color transitions, depth through gradients)",
+    "Typography First (type as the hero, letterforms as design)",
+    "Metropolitan (urban sophistication, cultural depth)",
+];
 
-    const prompt = `Generate a complete Next.js landing page for a SaaS product called "${siteName}".
-The site should be a premium, dark-mode landing page with:
-- A stunning hero section with gradient text and a call-to-action
-- A features section with at least 6 feature cards
-- A pricing section with 3 tiers
-- A testimonials section
-- A footer
-- Smooth CSS animations and hover effects
-- Fully responsive design
+function pickRandomStyle(): string {
+    // Use timestamp + Math.random for extra entropy to ensure variety
+    const seed = Date.now() ^ (Math.random() * 0xFFFFFFFF);
+    const index = Math.abs(seed) % DESIGN_STYLES.length;
+    return DESIGN_STYLES[index];
+}
 
-CRITICAL RULES:
+function buildDesignPrompt(siteName: string, style: string): string {
+    return `Generate a ONE-PAGE LANDING PAGE creation prompt using a RANDOMLY SELECTED design style from the following list, or choose your own style if you identify something more suitable that's not listed. IMPORTANT: Use a random selection method - any method that ensures variety. DO NOT default to Neobrutalist or any particular favorite. Actually randomize your selection.
+
+**Available Design Styles (not limited to these - feel free to identify and use other professional styles):**
+
+- Neobrutalist (raw, bold, confrontational with structured impact)
+- Swiss/International (grid-based, systematic, ultra-clean typography)
+- Editorial (magazine-inspired, sophisticated typography, article-focused)
+- Glassmorphism (translucent layers, blurred backgrounds, depth)
+- Retro-futuristic (80s vision of the future, refined nostalgia)
+- Bauhaus (geometric simplicity, primary shapes, form follows function)
+- Art Deco (elegant patterns, luxury, vintage sophistication)
+- Minimal (extreme reduction, maximum whitespace, essential only)
+- Flat (no depth, solid colors, simple icons, clean)
+- Material (Google-inspired, cards, subtle shadows, motion)
+- Neumorphic (soft shadows, extruded elements, tactile)
+- Monochromatic (single color variations, tonal depth)
+- Scandinavian (hygge, natural materials, warm minimalism)
+- Japandi (Japanese-Scandinavian fusion, zen meets hygge)
+- Dark Mode First (designed for dark interfaces, high contrast elegance)
+- Modernist (clean lines, functional beauty, timeless)
+- Organic/Fluid (flowing shapes, natural curves, sophisticated blob forms)
+- Corporate Professional (trust-building, established, refined)
+- Tech Forward (innovative, clean, future-focused)
+- Luxury Minimal (premium restraint, high-end simplicity)
+- Neo-Geo (refined geometric patterns, mathematical beauty)
+- Kinetic (motion-driven, dynamic but controlled)
+- Gradient Modern (sophisticated color transitions, depth through gradients)
+- Typography First (type as the hero, letterforms as design)
+- Metropolitan (urban sophistication, cultural depth)
+
+**Instructions:**
+
+After selecting a design style (either from the list or your own professional choice), create a ONE-PAGE LANDING PAGE prompt that is EXACTLY THREE PARAGRAPHS. Focus intensely on conveying the FEELING and ATMOSPHERE of the chosen style:
+
+Paragraph 1: State the chosen style(s) and ask the AI to conceive an innovative business/service concept for a SINGLE-PAGE landing page. Describe the core emotional qualities and feeling this style evokes - what mood should visitors experience as they arrive? How should the visual hierarchy and flow make them feel as they scroll through this single cohesive page? Include a note to incorporate colorful elements as appropriate to enhance the design's emotional impact.
+
+Paragraph 2: Explain the design philosophy through the lens of emotion and user experience. How should typography feel - authoritative, welcoming, cutting-edge? What sensation should interactions and animations create - smooth and liquid, snappy and precise, gentle and organic? Describe how the single-page journey should emotionally progress from first impression through final call-to-action, creating a complete narrative arc in one scrolling experience.
+
+Paragraph 3: Provide abstract reference points that capture this aesthetic's essence - think about the feeling of certain types of spaces, cultural movements, artistic periods, architectural styles, or design philosophies that embody this aesthetic. Reference the emotional qualities of premium experiences, sophisticated environments, or refined craftsmanship that should inspire the design. Explain how these abstract references should influence the emotional quality and visual sophistication of the final single-page design, without naming specific brands or platforms.
+
+The generated prompt must emphasize this is ONE COHESIVE LANDING PAGE with a single scrolling experience. Focus on feeling, atmosphere, and abstract quality references rather than technical details or specific examples. Keep all references conceptual and high-level to allow for maximum creative interpretation.
+
+IMPORTANT: The site is called "${siteName}". I have pre-selected the style "${style}" for you — USE THIS STYLE. Now generate the full landing page code (not just a prompt). Output complete Next.js code files directly.
+
+CRITICAL TECHNICAL RULES:
 - Use ONLY vanilla CSS in globals.css. Do NOT use @tailwind directives or any Tailwind CSS.
 - Do NOT include tailwindcss, @tailwindcss/postcss, postcss, or autoprefixer as dependencies.
 - Do NOT create postcss.config.js, postcss.config.mjs, or tailwind.config files.
-- Only create ONE next.config file (next.config.ts), never next.config.mjs or next.config.js.
+- Create next.config.mjs (NOT next.config.ts or next.config.js).
 - Use Next.js 14.x (not 15.x) for maximum compatibility.
+- Include typescript, @types/react, and @types/node as devDependencies in package.json.
 
 Output ALL files using the ===FILE: path=== ... ===END FILE=== format as instructed in your identity.`;
+}
+
+async function generateSite(siteName: string, outputDir: string): Promise<boolean> {
+    const style = pickRandomStyle();
+    console.log(`\n🎨 [Agent 1 · Generator] Creating "${style}" landing page for "${siteName}"...`);
+
+    const prompt = buildDesignPrompt(siteName, style);
 
     try {
         const content = await callOpenClaw("openpages", prompt);
@@ -162,6 +235,7 @@ Output ALL files using the ===FILE: path=== ... ===END FILE=== format as instruc
         return false;
     }
 }
+
 
 async function localBuild(siteDir: string): Promise<{ ok: boolean; logs: string }> {
     console.log(`\n🔨 [Agent 1 · Build] Running npm install + build in ${path.basename(siteDir)}...`);
