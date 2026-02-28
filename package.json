@@ -1,0 +1,16 @@
+{
+  "name": "openpages-orchestra",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-agent orchestra for generating and deploying landing pages",
+  "scripts": {
+    "generate": "tsx -r dotenv/config scripts/orchestrate.ts",
+    "generate:dry": "tsx -r dotenv/config scripts/orchestrate.ts --dry-run"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.2",
+    "dotenv": "^16.4.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}

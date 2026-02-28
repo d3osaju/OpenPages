@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+sites/*/node_modules/
+
+# Build output
+.next/
+sites/*/.next/
+out/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Lock files (generated sites shouldn't ship these)
+sites/*/package-lock.json
+sites/*/yarn.lock
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated debug
+sites/*/_raw_response.txt
